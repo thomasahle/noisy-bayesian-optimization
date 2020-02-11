@@ -2,7 +2,8 @@
 .DS_Store
 __pycache__/
 demo
+demo.py
 tune.log
 tune_debugfile
 tune_out.pgn
-
+*.pyc
