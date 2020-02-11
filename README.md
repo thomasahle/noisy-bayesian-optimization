@@ -66,3 +66,9 @@ Here two (uci or xboard) parameters `eval_roughness` and `qs_limit` are optimize
 Games are played against the unoptimized engine.
 For all available options see `python chess_tuner.py --help`.
 The code is a fork of the [fastchess](https://github.com/thomasahle/fastchess) chess tuner, which used normal gaussian bayesian optimization, and thus would often converge to the wrong values.
+
+# Installation
+
+You need to `pip install numpy scipy scikit-optimize gpytorch torch`.
+To run the chess tuner you also need `pip install chess`.
+You can then `git clone git@github.com:thomasahle/noisy-bayesian-optimization.git` and run `python noisy-bayesian-optimization/chess/chess_tuner.py` directly.
