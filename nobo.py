@@ -162,30 +162,3 @@ class Optimizer:
         ax.legend()
         plt.show()
 
-
-def _test():
-    smoke_test = ('CI' in os.environ)
-    training_inner = 2 if smoke_test else 10
-    training_outer = 2 if smoke_test else 100
-    report_iter = 30
-
-    def f(xs, noise=0.5):
-        x, = xs
-        import random
-        if random.random() > noise:
-            return int(random.random() < x**2)
-        return int(random.random() < .5)
-
-    #bo = Optimizer([skopt.utils.Real(-1, 1)])
-    bo = Optimizer([skopt.utils.Real(-1, 1)], maximize=True)
-    for j in range(training_outer):
-        x = bo.ask(verbose=True)
-        bo.tell(x, f(x))
-        if (j+1) % report_iter == 0:
-            x, lo, y, hi = bo.get_best()
-            print(f'Best: {x}, f(x) = {y:.3} +/- {(hi-lo)/2:.3}')
-            bo.plot()
-
-if __name__ == '__main__':
-    _test()
-
