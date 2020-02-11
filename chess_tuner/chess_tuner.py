@@ -21,7 +21,7 @@ import numpy as np
 import nobo
 import skopt
 
-from arena import Arena
+from .arena import Arena
 
 warnings.filterwarnings(
     'ignore',
