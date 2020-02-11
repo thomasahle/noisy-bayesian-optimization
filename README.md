@@ -33,7 +33,7 @@ In `chess/chess_tuner.py` we include a useful tool giving a complete playing and
 An example of usage is:
 
 ```bash
-$ python chess_tuner.py sunfish -n 1000 -movetime 40 -conrrency=20
+$ python python -m chess_tuner.chess_tuner sunfish -n 1000 -movetime 40 -conrrency=20
         -book lines.pgn -games-file tune_out.pgn
         -opt eval_roughness 1 30 -opt qs_limit 1 400
         -log-file tune.log -debug tune_debugfile -conf engines.json -result-interval 10
@@ -64,7 +64,7 @@ Best expectation (κ=0.0): [7, 78] = 0.363 ± 0.424 (ELO-diff 132.3 ± 164.0)
 
 Here two (uci or xboard) parameters `eval_roughness` and `qs_limit` are optimized.
 Games are played against the unoptimized engine.
-For all available options see `python chess_tuner.py --help`.
+For all available options see `python -m chess_tuner.chess_tuner --help`.
 The code is a fork of the [fastchess](https://github.com/thomasahle/fastchess) chess tuner, which used normal gaussian bayesian optimization, and thus would often converge to the wrong values.
 
 # Installation
