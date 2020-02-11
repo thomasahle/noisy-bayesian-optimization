@@ -314,20 +314,22 @@ def summarize(opt, steps):
     print('Summarizing best values')
     for kappa in [0] + list(np.logspace(-1, 1, steps-1)):
         x, lo, y, hi = opt.get_best(kappa=kappa)
+        # Optimizer uses [0,1]. We use [-1,1].
+        lo, y, hi = lo*2-1, y*2-1, hi*2-1
         def score_to_elo(score):
-            if score <= 0:
+            if score <= -1:
                 return float('inf')
             if score >= 1:
                 return -float('inf')
             # Formula frorm https://www.chessprogramming.org/Match_Statistics
-            return 400 * math.log10(score/(1-score))
+            return 400 * math.log10((1+score)/(1-score))
         elo = score_to_elo(y)
         raw_pm = max(y-lo, hi-y)
         pm = max(abs(score_to_elo(hi) - elo),
                  abs(score_to_elo(lo) - elo))
         print(f'Best expectation (κ={kappa:.1f}): {x}'
-              f' = {y[0]:.3f} ± {raw_pm:.3f}'
-              f' (ELO-diff {elo:.3f} ± {pm:.3f})')
+              f' = {y:.3f} ± {raw_pm:.3f}'
+              f' (ELO-diff {elo:.1f} ± {pm:.1f})')
 
 
 async def main():
