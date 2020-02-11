@@ -52,7 +52,11 @@ class Optimizer:
         #losses = []
         for i in range(iterations):
             optimizer.zero_grad()
-            output = model(train_x)
+            try:
+                output = model(train_x)
+            except RuntimeError:
+                print('Error in training. Trying again with lower lr')
+                return self._train(iterations, lr/2, verbose)
             loss = -mll(output, train_y)
             loss.backward()
             #losses.append(loss.item())
@@ -87,7 +91,11 @@ class Optimizer:
             # TODO: We should do this instead using optimization, or using
             # the training loop (above) directly
             test_x = self._random_in_bounds(n=100)
-            latent_pred = model(torch.tensor(test_x).float())
+            try:
+                latent_pred = model(torch.tensor(test_x).float())
+            except RuntimeError:
+                print('Error in running model. Returning random point.')
+                return self._random_in_bounds()[0]
             # Using Lower Confidnce Bound. Could be changed to something else
             # like expected improvement.
             xstar = test_x[np.argmin(
@@ -109,7 +117,11 @@ class Optimizer:
             # TODO: We should do this instead using optimization, or using
             # the training loop (above) directly
             test_x = self._random_in_bounds(n=500)
-            latent_pred = model(torch.tensor(test_x).float())
+            try:
+                latent_pred = model(torch.tensor(test_x).float())
+            except RuntimeError:
+                print('Error in running model. Returning 0')
+                return 0, 0, 0, 0
             # Using Lower Confidnce Bound. Could be changed to something else
             # like expected improvement.
             vals = latent_pred.mean - kappa*latent_pred.stddev
