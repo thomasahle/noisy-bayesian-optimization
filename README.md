@@ -69,6 +69,6 @@ The code is a fork of the [fastchess](https://github.com/thomasahle/fastchess) c
 
 # Installation
 
-You need to `pip install numpy scipy scikit-optimize gpytorch torch`.
+You need to `pip install numpy scipy scikit-optimize gpytorch torch matplotlib`.
 To run the chess tuner you also need `pip install chess`.
 You can then `git clone git@github.com:thomasahle/noisy-bayesian-optimization.git` and run `python noisy-bayesian-optimization/chess/chess_tuner.py` directly.
