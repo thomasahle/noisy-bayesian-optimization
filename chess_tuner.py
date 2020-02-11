@@ -251,7 +251,7 @@ class DataLogger:
                     x, y = obj['x'], obj['y']
                     print(f'Using {x} => {y} from log-file')
                     try:
-                        opt.tell(x, y)
+                        opt.tell(x, (y+1)/2) # Format in [0,1]
                     except ValueError as e:
                         print('Ignoring bad data point', e)
         return len(opt.xs)
@@ -315,11 +315,12 @@ def summarize(opt, steps):
     for kappa in [0] + list(np.logspace(-1, 1, steps-1)):
         x, lo, y, hi = opt.get_best(kappa=kappa)
         def score_to_elo(score):
-            if score <= -1:
+            if score <= 0:
                 return float('inf')
             if score >= 1:
                 return -float('inf')
-            return 400 * math.log10((1+score)/(1-score))
+            # Formula frorm https://www.chessprogramming.org/Match_Statistics
+            return 400 * math.log10(score/(1-score))
         elo = score_to_elo(y)
         raw_pm = max(y-lo, hi-y)
         pm = max(abs(score_to_elo(hi) - elo),
@@ -447,7 +448,7 @@ async def main():
                 if er:
                     print('Game erred:', er, type(er))
                     continue
-                opt.tell(x, y)
+                opt.tell(x, (y+1)/2) # Format in [0,1]
                 results = ', '.join(g.headers['Result'] for g in games)
                 print(f'Finished game {game_id} {x} => {y} ({results})')
                 if data_logger:
