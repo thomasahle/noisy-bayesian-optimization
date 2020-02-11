@@ -34,7 +34,7 @@ An example of usage is:
 
 ```bash
 $ python chess_tuner.py sunfish -n 1000 -movetime 40 -conrrency=20
-        -book ~/cutechess/lines.pgn -games-file tune_out.pgn
+        -book lines.pgn -games-file tune_out.pgn
         -opt eval_roughness 1 30 -opt qs_limit 1 400
         -log-file tune.log -debug tune_debugfile -conf engines.json -result-interval 10
 Loaded book with 173 positions
