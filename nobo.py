@@ -6,15 +6,16 @@ import torch
 import gpytorch
 import numpy as np
 from scipy.stats import norm as normal
+import skopt.utils
 
 
-class GPModel(ApproximateGP):
+class _GPModel(ApproximateGP):
     def __init__(self, train_x, sigma=1):
         variational_distribution = CholeskyVariationalDistribution(
             train_x.size(0))
         variational_strategy = VariationalStrategy(
             self, train_x, variational_distribution, learn_inducing_locations=False)
-        super(GPModel, self).__init__(variational_strategy)
+        super().__init__(variational_strategy)
         self.mean_module = gpytorch.means.ConstantMean()
         self.covar_module = gpytorch.kernels.ScaleKernel(
             gpytorch.kernels.RBFKernel(lengthscale_prior=gpytorch.priors.NormalPrior(0, sigma)))
@@ -28,9 +29,9 @@ class GPModel(ApproximateGP):
 
 
 class NoisyBayesianOptimization:
-    def __init__(self, bounds, initial_points=10):
-        self.bounds = np.array(bounds)
-        self.d = len(bounds)
+    def __init__(self, dimensions, initial_points=10):
+        self.space = skopt.utils.Space(dimensions)
+        self.d = len(dimensions)
         self.initial_points = initial_points
         self.likelihood = gpytorch.likelihoods.BernoulliLikelihood()
         self.xs = []
@@ -39,7 +40,7 @@ class NoisyBayesianOptimization:
     def _train(self, iterations, lr, verbose=False):
         train_x = torch.cat(self.xs, dim=0).float()
         train_y = torch.tensor(self.ys, dtype=torch.float).float()
-        model = GPModel(train_x, sigma=1)
+        model = _GPModel(train_x, sigma=1)
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         mll = gpytorch.mlls.VariationalELBO(
             self.likelihood, model, train_y.numel())
@@ -47,14 +48,18 @@ class NoisyBayesianOptimization:
         # Find optimal model hyperparameters
         model.train()
         self.likelihood.train()
+        #losses = []
         for i in range(iterations):
             optimizer.zero_grad()
             output = model(train_x)
             loss = -mll(output, train_y)
             loss.backward()
+            #losses.append(loss.item())
             if verbose:
                 print('Iter %d/%d - Loss: %.3f' %
-                      (i + 1, iterations, loss.item()))
+                      (i+1, iterations, loss.item()))
+            #if len(losses) >= iterations and np.argmin(losses)/len(losses) < 3/4:
+                #break
             optimizer.step()
 
         model.eval()
@@ -62,8 +67,7 @@ class NoisyBayesianOptimization:
         return model
 
     def _random_in_bounds(self, n=1):
-        return np.random.rand(n, self.d) * \
-            (self.bounds[:, 1] - self.bounds[:, 0]) + self.bounds[:, 0]
+        return self.space.transform(self.space.rvs(n))
 
     def ask(self, iterations=50, lr=0.1, verbose=False):
         if len(self.xs) < self.initial_points:
@@ -79,9 +83,10 @@ class NoisyBayesianOptimization:
             # like expected improvement.
             xstar = test_x[np.argmin(
                 latent_pred.mean - kappa*latent_pred.stddev)]
-            return xstar
+            return self.space.inverse_transform(xstar.reshape(1,-1))[0]
 
     def tell(self, x, y):
+        x = self.space.transform([x])[0]
         self.xs.append(torch.tensor(x))
         self.ys.append(float(y))
 
@@ -96,10 +101,11 @@ class NoisyBayesianOptimization:
             # like expected improvement.
             vals = latent_pred.mean - kappa*latent_pred.stddev
             i = np.argmin(vals)
+            x = self.space.inverse_transform(test_x[i].reshape(1,-1))[0]
             mean = normal.cdf(vals[i])
             lower = normal.cdf(latent_pred.mean[i] - latent_pred.stddev[i])
             upper = normal.cdf(latent_pred.mean[i] + latent_pred.stddev[i])
-            return test_x[i], lower, mean, upper
+            return x, lower, mean, upper
 
     def plot(self, iterations=500, lr=0.1):
         assert self.d == 1
@@ -110,7 +116,8 @@ class NoisyBayesianOptimization:
 
         model = self._train(iterations, lr)
         with torch.no_grad():
-            test_x = np.linspace(*self.bounds[0], 100)
+            test_x = self._random_in_bounds(n=100)
+            test_x = np.sort(test_x, axis=0)
             latent_pred = model(torch.tensor(test_x).float())
 
         kappa = np.log(len(self.xs)+1)
@@ -129,25 +136,28 @@ class NoisyBayesianOptimization:
         plt.show()
 
 
-smoke_test = ('CI' in os.environ)
-training_inner = 2 if smoke_test else 10
-training_outer = 2 if smoke_test else 100
-report_iter = 30
+def _test():
+    smoke_test = ('CI' in os.environ)
+    training_inner = 2 if smoke_test else 10
+    training_outer = 2 if smoke_test else 100
+    report_iter = 30
 
+    def f(xs, noise=0.5):
+        x, = xs
+        import random
+        if random.random() > noise:
+            return int(random.random() < x**2)
+        return int(random.random() < .5)
 
-def f(x, noise=0.5):
-    import random
-    if random.random() > noise:
-        return int(random.random() < x**2)
-    return int(random.random() < .5)
+    bo = NoisyBayesianOptimization([skopt.utils.Real(-1, 1)])
+    for j in range(training_outer):
+        x = bo.ask(verbose=True, iterations=10)
+        bo.tell(x, f(x))
+        if (j+1) % report_iter == 0:
+            x, lo, y, hi = bo.get_best(iterations=50)
+            print(f'Best: {x}, f(x) = {y:.3} +/- {(hi-lo)/2:.3}')
+            bo.plot(iterations=50)
 
-
-bo = NoisyBayesianOptimization([(-1, 1)])
-for j in range(training_outer):
-    x = bo.ask(verbose=True, iterations=10)
-    bo.tell(x, f(x))
-    if (j+1) % report_iter == 0:
-        x, lo, y, hi = bo.get_best(iterations=50)
-        print(f'Best: {x}, f(x) = {y:.3} +/- {(hi-lo)/2:.3}')
-        bo.plot(iterations=50)
+if __name__ == '__main__':
+    _test()
 
