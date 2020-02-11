@@ -28,12 +28,13 @@ class _GPModel(ApproximateGP):
         return latent_pred
 
 
-class NoisyBayesianOptimization:
-    def __init__(self, dimensions, initial_points=10):
+class Optimizer:
+    def __init__(self, dimensions, initial_points=10, maximize=False):
         self.space = skopt.utils.Space(dimensions)
         self.d = len(dimensions)
         self.initial_points = initial_points
         self.likelihood = gpytorch.likelihoods.BernoulliLikelihood()
+        self.maximize = maximize
         self.xs = []
         self.ys = []
 
@@ -69,9 +70,17 @@ class NoisyBayesianOptimization:
     def _random_in_bounds(self, n=1):
         return self.space.transform(self.space.rvs(n))
 
-    def ask(self, iterations=50, lr=0.1, verbose=False):
+    def ask(self, n=1, iterations=10, lr=0.1, verbose=False):
+        # TODO: Find multiple points more intelligently.
+        # Can also use yield to allow called to get started early.
+        if n > 1:
+            xs = list(self._random_in_bounds(n-1))
+            xs.append(self.ask(1, iterations, lr, verbose))
+            return xs
+        # Use random points in the beginning
         if len(self.xs) < self.initial_points:
             return self._random_in_bounds()[0]
+        # Train new model
         kappa = np.log(len(self.xs)+1)
         model = self._train(iterations, lr, verbose=verbose)
         with torch.no_grad():
@@ -86,16 +95,20 @@ class NoisyBayesianOptimization:
             return self.space.inverse_transform(xstar.reshape(1,-1))[0]
 
     def tell(self, x, y):
-        x = self.space.transform([x])[0]
-        self.xs.append(torch.tensor(x))
+        #print(f'tell({x}, {y})')
+        assert 0-1e-5 <= y <= 1+1e-5, f'y ({y}) not in range [0, 1]'
+        x = self.space.transform([x])
+        self.xs.append(torch.tensor(x).float())
+        if self.maximize:
+            y = 1-y
         self.ys.append(float(y))
 
-    def get_best(self, iterations=500, lr=0.1, kappa=0):
+    def get_best(self, iterations=50, lr=0.1, kappa=0):
         model = self._train(iterations, lr)
         with torch.no_grad():
             # TODO: We should do this instead using optimization, or using
             # the training loop (above) directly
-            test_x = self._random_in_bounds(n=100)
+            test_x = self._random_in_bounds(n=500)
             latent_pred = model(torch.tensor(test_x).float())
             # Using Lower Confidnce Bound. Could be changed to something else
             # like expected improvement.
@@ -105,9 +118,11 @@ class NoisyBayesianOptimization:
             mean = normal.cdf(vals[i])
             lower = normal.cdf(latent_pred.mean[i] - latent_pred.stddev[i])
             upper = normal.cdf(latent_pred.mean[i] + latent_pred.stddev[i])
+            if self.maximize:
+                return x, 1-upper, 1-mean, 1-lower
             return x, lower, mean, upper
 
-    def plot(self, iterations=500, lr=0.1):
+    def plot(self, iterations=50, lr=0.1):
         assert self.d == 1
 
         from matplotlib import pyplot as plt
@@ -149,14 +164,15 @@ def _test():
             return int(random.random() < x**2)
         return int(random.random() < .5)
 
-    bo = NoisyBayesianOptimization([skopt.utils.Real(-1, 1)])
+    #bo = Optimizer([skopt.utils.Real(-1, 1)])
+    bo = Optimizer([skopt.utils.Real(-1, 1)], maximize=True)
     for j in range(training_outer):
-        x = bo.ask(verbose=True, iterations=10)
+        x = bo.ask(verbose=True)
         bo.tell(x, f(x))
         if (j+1) % report_iter == 0:
-            x, lo, y, hi = bo.get_best(iterations=50)
+            x, lo, y, hi = bo.get_best()
             print(f'Best: {x}, f(x) = {y:.3} +/- {(hi-lo)/2:.3}')
-            bo.plot(iterations=50)
+            bo.plot()
 
 if __name__ == '__main__':
     _test()

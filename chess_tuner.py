@@ -19,6 +19,7 @@ import chess.engine
 import chess
 import numpy as np
 import nobo
+import skopt
 
 from arena import Arena
 
@@ -226,9 +227,9 @@ def plot_optimizer(opt, lower, upper):
 def x_to_args(x, dim_names, options):
     args = {name: val for name, val in zip(dim_names, x)}
     for name, val in args.items():
-        opt = options[name]
-        if opt.type == 'combo':
-            args[name] = opt.var[val]
+        option = options[name]
+        if option.type == 'combo':
+            args[name] = option.var[val]
     return args
 
 
@@ -243,7 +244,6 @@ class DataLogger:
             print(f'Unable to open {self.path}')
             return 0
         print(f'Reading {self.path}')
-        xs, ys = [], []
         with self.path.open('r') as file:
             for line in file:
                 obj = json.loads(line)
@@ -251,15 +251,10 @@ class DataLogger:
                     x, y = obj['x'], obj['y']
                     print(f'Using {x} => {y} from log-file')
                     try:
-                        xs.append(x)
-                        ys.append(-y)
+                        opt.tell(x, y)
                     except ValueError as e:
                         print('Ignoring bad data point', e)
-        # Fit the first model, but because of a bug the lists can't be empty.
-        if xs:
-            print('Fitting first model')
-            opt.tell(xs, ys, fit=True)
-        return len(xs)
+        return len(opt.xs)
 
     def store(self, x, y):
         if not self.append_file:
@@ -318,21 +313,7 @@ def parse_options(opts, copts, engine_options):
 def summarize(opt, steps):
     print('Summarizing best values')
     for kappa in [0] + list(np.logspace(-1, 1, steps-1)):
-        new_opt = skopt.Optimizer(opt.space.dimensions,
-                acq_func='LCB',
-                acq_func_kwargs=dict(
-                    kappa=kappa/5,
-                    n_jobs=-1,
-                    ),
-                acq_optimizer='lbfgs',
-                acq_optimizer_kwargs=dict(
-                    n_restarts_optimizer=100,
-                    )
-                )
-        new_opt.tell(opt.Xi, opt.yi)
-        x = new_opt.ask()
-        y, sigma = new_opt.models[-1].predict([x], return_std=True)
-        y = -y # Change back from minimization to maximization
+        x, lo, y, hi = opt.get_best(kappa=kappa)
         def score_to_elo(score):
             if score <= -1:
                 return float('inf')
@@ -340,10 +321,11 @@ def summarize(opt, steps):
                 return -float('inf')
             return 400 * math.log10((1+score)/(1-score))
         elo = score_to_elo(y)
-        pm = max(abs(score_to_elo(y + sigma) - elo),
-                 abs(score_to_elo(y - sigma) - elo))
+        raw_pm = max(y-lo, hi-y)
+        pm = max(abs(score_to_elo(hi) - elo),
+                 abs(score_to_elo(lo) - elo))
         print(f'Best expectation (κ={kappa:.1f}): {x}'
-              f' = {y[0]:.3f} ± {sigma[0]:.3f}'
+              f' = {y[0]:.3f} ± {raw_pm:.3f}'
               f' (ELO-diff {elo:.3f} ± {pm:.3f})')
 
 
@@ -376,7 +358,7 @@ async def main():
         book.append(chess.Board())
         print('No book. Starting every game from initial position.')
 
-    print('Loading engines')
+    print(f'Loading {args.concurrency} engines')
     conf = load_conf(args.conf)
     engines = await asyncio.gather(*(asyncio.gather(
         load_engine(conf, args.engine),
@@ -387,25 +369,7 @@ async def main():
     print('Parsing options')
     dim_names, dimensions = parse_options(args.opt, args.c_opt, options)
 
-    opt = skopt.Optimizer(
-        dimensions,
-        base_estimator=args.base_estimator,
-        n_initial_points=args.n_initial_points,
-        acq_func=args.acq_func,
-        acq_optimizer=args.acq_optimizer,
-        acq_func_kwargs={
-            'xi': args.acq_xi,
-            'kappa': 'inf',
-            'noise': args.acq_noise,
-            'n_jobs': -1,
-            },
-        #xi=args.acq_xi,
-        #kappa=args.acq_kappa,
-        #noise=args.acq_noise,
-        acq_optimizer_kwargs=dict(
-            n_points=args.acq_n_points,
-        )
-    )
+    opt = nobo.Optimizer(dimensions, maximize=True)
 
     if args.games_file:
         games_file = args.games_file.open('a')
@@ -483,26 +447,20 @@ async def main():
                 if er:
                     print('Game erred:', er, type(er))
                     continue
-                opt.tell(x, -y)  # opt is minimizing
-                # Delete old models to save memory. Note that for the first 10 tells (default)
-                # or the specified -n-initial-points no model is created, as we are still just
-                # querying at random.
-                logging.debug(f'Number of models {len(opt.models)}')
-                if len(opt.models) > 1:
-                    del opt.models[0]
+                opt.tell(x, y)
                 results = ', '.join(g.headers['Result'] for g in games)
                 print(f'Finished game {game_id} {x} => {y} ({results})')
                 if data_logger:
                     data_logger.store(x, y)
                 if started < args.n:
                     tasks.append(new_game(arena))
-                if opt.models and game_id != 0 and args.result_interval > 0 and game_id % args.result_interval == 0:
+                if game_id != 0 and args.result_interval > 0 and game_id % args.result_interval == 0:
                     summarize(opt, steps=1)
 
     except asyncio.CancelledError:
         pass
 
-    if opt.Xi and opt.models:
+    if opt.xs:
         summarize(opt, steps=6)
         if len(dimensions) == 1:
             plot_optimizer(opt, dimensions[0].low, dimensions[0].high)

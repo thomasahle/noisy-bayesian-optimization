@@ -1,0 +1,7 @@
+*.swp
+__pycache__/
+demo
+tune.log
+tune_debugfile
+tune_out.pgn
+
