@@ -1,6 +1,8 @@
 # Nobo (or noisy-bayesian-optimization)
 Nobo is a library for optimizing very noisy functions using [bayesian optimization](https://en.wikipedia.org/wiki/Bayesian_optimization).
 In particular functions `p(x) -> [0,1]` for which you only observe a random variable `V_x ~ Bernoulli(p(x))`.
+This might model A/B testing or a game playing program.
+
 The following example shows how to use Nobo to find the minimum of `p(x) = x^2` over `[-1, 1]` in this situation:
 
 ```python
