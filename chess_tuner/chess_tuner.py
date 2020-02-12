@@ -1,4 +1,5 @@
 import math
+import concurrent
 import hashlib
 import functools
 import sys
@@ -21,7 +22,7 @@ import numpy as np
 import nobo
 import skopt
 
-from .arena import Arena
+from .arena import Arena, ArenaRunner
 
 warnings.filterwarnings(
     'ignore',
@@ -195,66 +196,26 @@ def load_conf(conf):
         return json.load(conf.open())
 
 
-def plot_optimizer(opt, lower, upper):
-    import matplotlib.pyplot as plt
-    plt.set_cmap("viridis")
-
-    if not opt.models:
-        print('Can not plot opt, since models do not exist yet.')
-        return
-    model = opt.models[-1]
-    x = np.linspace(lower, upper).reshape(-1, 1)
-    x_model = opt.space.transform(x)
-
-    # Plot Model(x) + contours
-    y_pred, sigma = model.predict(x_model, return_std=True)
-    plt.plot(x, -y_pred, "g--", label=r"$\mu(x)$")
-    plt.fill(np.concatenate([x, x[::-1]]),
-             np.concatenate([-y_pred - 1.9600 * sigma,
-                             (-y_pred + 1.9600 * sigma)[::-1]]),
-             alpha=.2, fc="g", ec="None")
-
-    # Plot sampled points
-    plt.plot(opt.Xi, -np.array(opt.yi),
-             "r.", markersize=8, label="Observations")
-
-    # Adjust plot layout
-    plt.grid()
-    plt.legend(loc='best')
-    plt.show()
-
-
-def x_to_args(x, dim_names, options):
-    args = {name: val for name, val in zip(dim_names, x)}
-    for name, val in args.items():
-        option = options[name]
-        if option.type == 'combo':
-            args[name] = option.var[val]
-    return args
-
-
 class DataLogger:
     def __init__(self, path, key):
         self.path = path
         self.key = key
         self.append_file = None
 
-    def load(self, opt):
+    def load(self):
         if not self.path.is_file():
             print(f'Unable to open {self.path}')
-            return 0
+            return
         print(f'Reading {self.path}')
         with self.path.open('r') as file:
             for line in file:
                 obj = json.loads(line)
                 if obj.get('args') == self.key:
                     x, y = obj['x'], obj['y']
-                    print(f'Using {x} => {y} from log-file')
                     try:
-                        opt.tell(x, (y+1)/2) # Format in [0,1]
+                        yield (x, y)
                     except ValueError as e:
                         print('Ignoring bad data point', e)
-        return len(opt.xs)
 
     def store(self, x, y):
         if not self.append_file:
@@ -310,10 +271,10 @@ def parse_options(opts, copts, engine_options):
     return dim_names, dimensions
 
 
-def summarize(opt, steps):
+async def summarize(opt, steps, restarts=0):
     print('Summarizing best values')
     for kappa in [0] + list(np.logspace(-1, 1, steps-1)):
-        x, lo, y, hi = opt.get_best(kappa=kappa)
+        x, lo, y, hi = await opt.get_best(kappa=kappa, restarts=restarts)
         # Optimizer uses [0,1]. We use [-1,1].
         lo, y, hi = lo*2-1, y*2-1, hi*2-1
         def score_to_elo(score):
@@ -330,7 +291,6 @@ def summarize(opt, steps):
         print(f'Best expectation (κ={kappa:.1f}): {x}'
               f' = {y:.3f} ± {raw_pm:.3f}'
               f' (ELO-diff {elo:.1f} ± {pm:.1f})')
-
 
 async def main():
     args = parser.parse_args()
@@ -353,6 +313,18 @@ async def main():
             if m:
                 win_adj_score = int(m.group(1))
 
+    limit = chess.engine.Limit(
+        nodes=args.nodes,
+        time=args.movetime and args.movetime / 1000)
+
+    assert args.games_per_encounter >= 2 and args.games_per_encounter % 2 == 0, \
+            'Games per encounter must be even and >= 2.'
+    
+    if args.n > 1000:
+        print(f'Running large number of games ({args.n} > 1000).')
+        print('Bayesian Optimization may be slow for that many points. Consider increasing -games-per-encounter instead.')
+
+    # Load book
     book = []
     if args.book:
         book.extend(load_book(args.book, args.n_book))
@@ -361,6 +333,7 @@ async def main():
         book.append(chess.Board())
         print('No book. Starting every game from initial position.')
 
+    # Load engines
     print(f'Loading {args.concurrency} engines')
     conf = load_conf(args.conf)
     engines = await asyncio.gather(*(asyncio.gather(
@@ -369,16 +342,22 @@ async def main():
         for _ in range(args.concurrency)))
     options = engines[0][0].options
 
+    # Load options to tune
     print('Parsing options')
     dim_names, dimensions = parse_options(args.opt, args.c_opt, options)
+    def x_to_args(x):
+        args = {name: val for name, val in zip(dim_names, x)}
+        for name, val in args.items():
+            option = options[name]
+            if option.type == 'combo':
+                args[name] = option.var[val]
+        return args
 
-    opt = nobo.Optimizer(dimensions, maximize=True)
+    # Start optimizer process
+    opt = nobo.RPC(nobo.Optimizer, dimensions, maximize=True)
+    opt.start()
 
-    if args.games_file:
-        games_file = args.games_file.open('a')
-    else:
-        games_file = sys.stdout
-
+    # Load stored data
     if args.log_file:
         key_args = {}
         # Not all arguments change the result, so no need to keep them in the key.
@@ -388,88 +367,49 @@ async def main():
                 key_args[key] = getattr(args, key)
         key = repr(sorted(key_args.items())).encode()
         data_logger = DataLogger(args.log_file, key=hashlib.sha256(key).hexdigest())
-        cached_games = data_logger.load(opt)
+        for x, y in data_logger.load():
+            print(f'Using {x} => {y} from log-file')
+            await opt.tell(x, (y+1)/2) # Format in [0,1]
     else:
         print('No -log-file set. Results won\'t be saved.')
         data_logger = None
-        cached_games = 0
 
-    limit = chess.engine.Limit(
-        nodes=args.nodes,
-        time=args.movetime and args.movetime / 1000)
+    # Open file for saving full games (pgn)
+    games_file = args.games_file.open('a') if args.games_file else sys.stdout
 
-    assert args.games_per_encounter >= 2 and args.games_per_encounter % 2 == 0, \
-            'Games per encounter must be even and >= 2.'
-
-    # Run tasks concurrently
+    # Run games
     try:
-        started = cached_games
+        runner = ArenaRunner(engines, opt, x_to_args, args.n, args.concurrency, args.games_per_encounter)
+        arena_args = (book, limit, args.max_len, win_adj_count, win_adj_score)
+        games_done = 0
+        async for game_id, x, y, games, er in runner.run(arena_args):
+            for game in games:
+                print(game, end='\n\n', file=games_file, flush=True)
+            if er:
+                print('Game erred:', er, type(er))
+                continue
 
-        def on_done(task):
-            if task.exception():
-                logging.error('Error while excecuting game')
-                task.print_stack()
+            results = ', '.join(g.headers['Result'] for g in games)
+            print(f'Finished game {game_id} {x} => {y} ({results})')
 
-        def new_game(arena):
-            nonlocal started
-            x = opt.ask()
-            engine_args = x_to_args(x, dim_names, options)
-            print(f'Starting {args.games_per_encounter} games {started}/{args.n} with {engine_args}')
-            async def routine():
-                await arena.configure(engine_args)
-                return await arena.run_games(book, game_id=started,
-                                             games_played=args.games_per_encounter)
-            task = asyncio.create_task(routine())
-            # We tag the task with some attributes that we need when it finishes.
-            setattr(task, 'tune_x', x)
-            setattr(task, 'tune_arena', arena)
-            setattr(task, 'tune_game_id', started)
-            task.add_done_callback(on_done)
-            started += 1
-            return task
-        tasks = []
-        if args.n - started > 0:
-            # TODO: Even though it knows we are asking for multiple points,
-            # we still often get all points equal. Specially if restarting
-            # from logged data. Maybe we should just sample random points ourselves.
-            xs = opt.ask(min(args.concurrency, args.n - started))
-        else: xs = []
-        for conc_id, x_init in enumerate(xs):
-            enginea, engineb = engines[conc_id]
-            arena = Arena(enginea, engineb, limit, args.max_len, win_adj_count, win_adj_score)
-            tasks.append(new_game(arena))
-        while tasks:
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            tasks = list(pending)
-            for task in done:
-                res = task.result()
-                arena, x, game_id = task.tune_arena, task.tune_x, task.tune_game_id
-                games, y, er = res
-                for game in games:
-                    print(game, end='\n\n', file=games_file, flush=True)
-                if er:
-                    print('Game erred:', er, type(er))
-                    continue
-                opt.tell(x, (y+1)/2) # Format in [0,1]
-                results = ', '.join(g.headers['Result'] for g in games)
-                print(f'Finished game {game_id} {x} => {y} ({results})')
-                if data_logger:
-                    data_logger.store(x, y)
-                if started < args.n:
-                    tasks.append(new_game(arena))
-                if game_id != 0 and args.result_interval > 0 and game_id % args.result_interval == 0:
-                    summarize(opt, steps=1)
+            if data_logger:
+                data_logger.store(x, y)
 
+            games_done += 1
+            if args.result_interval > 0 and games_done % args.result_interval == 0:
+                await summarize(opt, steps=1)
     except asyncio.CancelledError:
         pass
 
-    if opt.xs:
-        summarize(opt, steps=6)
-        if len(dimensions) == 1:
-            plot_optimizer(opt, dimensions[0].low, dimensions[0].high)
+    # Summarize final results
+    if (await opt.size()):
+        await summarize(opt, steps=6, restarts=10)
+        if len(dimensions) <= 2:
+            await opt.plot()
     else:
         print('Not enought data to summarize results.')
 
+    # Close down
     logging.debug('Quitting engines')
     try:
         # Could also use wait here, but wait for some reason fails if the list

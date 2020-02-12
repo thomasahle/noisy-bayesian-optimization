@@ -12,9 +12,10 @@ from chess import WHITE, BLACK
 class Arena:
     MATE_SCORE = 32767
 
-    def __init__(self, enginea, engineb, limit, max_len, win_adj_count, win_adj_score):
+    def __init__(self, enginea, engineb, book, limit, max_len, win_adj_count, win_adj_score):
         self.enginea = enginea
         self.engineb = engineb
+        self.book = book
         self.limit = limit
         self.max_len = max_len
         self.win_adj_count = win_adj_count
@@ -104,12 +105,12 @@ class Arena:
             print(f'Unable to start game {e}')
             return [], 0
 
-    async def run_games(self, book, game_id=0, games_played=2):
+    async def run_games(self, game_id=0, games_played=2):
         score = 0
         games = []
         assert games_played % 2 == 0
         for r in range(games_played//2):
-            init_board = random.choice(book)
+            init_board = random.choice(self.book)
             for color in [WHITE, BLACK]:
                 white, black = (self.enginea, self.engineb) if color == WHITE \
                     else (self.engineb, self.enginea)
@@ -139,3 +140,65 @@ class Arena:
                 if result == '1-0' and color == BLACK or result == '0-1' and color == WHITE:
                     score -= 1
         return games, score/games_played, None
+
+
+class ArenaRunner:
+    def __init__(self, engines, opt, x_to_args, n_games, concurrency=1, games_per_encounter=1):
+        self.engines = engines
+        self.opt = opt
+        self.concurrency = concurrency
+        self.started = 0
+        self.games_per_encounter = games_per_encounter
+        self.x_to_args = x_to_args
+        self.n_games = n_games
+
+    def _on_done(self, task):
+        if task.exception():
+            logging.error('Error while excecuting game')
+            task.print_stack()
+
+    def _new_game(self, arena):
+        async def routine(game_id):
+            x = await self.opt.ask()
+            engine_args = self.x_to_args(x)
+            print(f'Starting {self.games_per_encounter} games {game_id}/{self.n_games} with {engine_args}')
+            await arena.configure(engine_args)
+            res = await arena.run_games(game_id=game_id, games_played=self.games_per_encounter)
+            return x, res
+        task = asyncio.create_task(routine(self.started))
+        # We tag the task with some attributes that we need when it finishes.
+        setattr(task, 'tune_arena', arena)
+        setattr(task, 'tune_game_id', self.started)
+        task.add_done_callback(self._on_done)
+        self.started += 1
+        return task
+
+    async def run(self, arena_args):
+        # Find how many games are already in the optimizer
+        self.started = await self.opt.size()
+
+        tasks = []
+        if self.n_games - self.started > 0:
+            xs = await self.opt.ask(min(self.concurrency, self.n_games - self.started))
+        else:
+            xs = []
+
+        for conc_id, x_init in enumerate(xs):
+            enginea, engineb = self.engines[conc_id]
+            arena = Arena(enginea, engineb, *arena_args)
+            tasks.append(self._new_game(arena))
+
+        while tasks:
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            tasks = list(pending)
+            for task in done:
+                arena, game_id = task.tune_arena, task.tune_game_id
+                x, (games, y, er) = task.result()
+
+                yield (game_id, x, y, games, er)
+
+                await self.opt.tell(x, (y+1)/2) # Format in [0,1]
+
+                if self.started < self.n_games:
+                    tasks.append(self._new_game(arena))
+
