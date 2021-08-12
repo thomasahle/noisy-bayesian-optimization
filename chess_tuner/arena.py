@@ -147,6 +147,7 @@ class ArenaRunner:
         self.engines = engines
         self.opt = opt
         self.concurrency = concurrency
+        assert len(engines) == concurrency
         self.started = 0
         self.games_per_encounter = games_per_encounter
         self.x_to_args = x_to_args
@@ -182,6 +183,7 @@ class ArenaRunner:
             xs = await self.opt.ask(min(self.concurrency, self.n_games - self.started))
         else:
             xs = []
+        assert len(xs) <= self.concurrency
 
         for conc_id, x_init in enumerate(xs):
             enginea, engineb = self.engines[conc_id]

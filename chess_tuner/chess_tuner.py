@@ -333,8 +333,8 @@ async def main():
         book.append(chess.Board())
         print('No book. Starting every game from initial position.')
 
-    # Load engines
-    print(f'Loading {args.concurrency} engines')
+    # Load a pair of engines for each concurrency
+    print(f'Loading {2*args.concurrency} engines')
     conf = load_conf(args.conf)
     engines = await asyncio.gather(*(asyncio.gather(
         load_engine(conf, args.engine),

@@ -24,7 +24,8 @@ class _GPModel(ApproximateGP, GPyTorchModel):
         super(_GPModel, self).__init__(variational_strategy)
         self.mean_module = gpytorch.means.ConstantMean()
         self.covar_module = gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.RBFKernel(lengthscale_prior=gpytorch.priors.NormalPrior(0, sigma)))
+            #gpytorch.kernels.RBFKernel(lengthscale_prior=gpytorch.priors.NormalPrior(0, sigma)))
+            gpytorch.kernels.RBFKernel())
 
     def forward(self, x):
         mean_x = self.mean_module(x)
@@ -87,7 +88,7 @@ class Optimizer:
     def ask2(self, n=1, iterations=10, lr=0.1, verbose=False):
         if n > 1:
             xs = list(self._random_in_bounds(n-1))
-            xs.append(self.ask(1, iterations, lr, verbose))
+            xs += self.ask(1, iterations, lr, verbose)
             return xs
         # Use random points in the beginning
         if len(self.xs) < self.initial_points:
@@ -139,18 +140,26 @@ class Optimizer:
         print(qnei_cands, qnei_vals)
         return qnei_cands
 
-    def ask(self, n=1, iterations=10, lr=0.1, verbose=False):
+    def ask(self, n=None, iterations=10, lr=0.1, verbose=False):
+        # If n is not given, we return a single point.
+        # If n is given, including if n=1, we return a list of that many points
+        if n is None:
+            x = self.ask(1, iterations, lr, verbose)
+            return x[0]
+
         # TODO: Find multiple points more intelligently.
         # Can also use yield to allow called to get started early.
         if n > 1:
-            xs = list(self._random_in_bounds(n-1))
-            xs.append(self.ask(1, iterations, lr, verbose))
-            return xs
+            return list(self._random_in_bounds(n-1)) \
+                    + self.ask(1, iterations, lr, verbose)
+
         # Use random points in the beginning
         if len(self.xs) < self.initial_points:
-            return self._random_in_bounds()[0]
+            return self._random_in_bounds()
+
         # Train new model
-        kappa = np.log(len(self.xs)+1)
+        kappa = np.sqrt(2*np.log(len(self.xs)+1))
+        #kappa = np.log(len(self.xs)+1)
         model = self._train(iterations, lr, verbose=verbose)
         with torch.no_grad():
             # TODO: We should do this instead using optimization, or using
@@ -160,12 +169,12 @@ class Optimizer:
                 latent_pred = model(torch.tensor(test_x).float())
             except RuntimeError:
                 print('Error in running model. Returning random point.')
-                return self._random_in_bounds()[0]
+                return self._random_in_bounds()
             # Using Lower Confidnce Bound. Could be changed to something else
             # like expected improvement.
             xstar = test_x[np.argmin(
                 latent_pred.mean - kappa*latent_pred.stddev)]
-            return self.space.inverse_transform(xstar.reshape(1,-1))[0]
+            return self.space.inverse_transform(xstar.reshape(1,-1))
 
     def tell(self, x, y):
         #print(f'tell({x}, {y})')
